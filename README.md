@@ -1,4 +1,4 @@
-# Conjur Just in time for Azure Service Principal
+# Conjur Dynamic Secrets for Azure Service Principal
 
 Demo: https://youtu.be/Cu3IBK3wrcs
 
