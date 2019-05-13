@@ -1,0 +1,8 @@
+- !policy
+  id: jit-azure-secrets
+
+- !policy
+  id: jit-azure-internal
+
+- !policy
+  id: azure

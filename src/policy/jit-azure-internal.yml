@@ -1,0 +1,9 @@
+- !layer
+
+- !host jit-azure-web
+
+- !host jit-azure-mgr
+
+- !grant
+  role: !layer
+  member: !host jit-azure-web

@@ -1,0 +1,250 @@
+#!/bin/bash
+
+_realcli="/usr/local/lib/ruby/gems/2.6.0/gems/conjur-cli-6.2.0/bin/conjur"
+_rootfolder="$(pwd)"
+
+function shout {
+	#unicorn printf '\360\237\246\204 '
+	printf '\360\237\215\272 ' #Beer!
+	echo -e "\033[1;32m$1\033[0m"
+}
+
+
+
+if [ "$#" -eq 0 ]; then
+  # Pass to Conjur CLI if no args
+	$_realcli
+	echo "    jit         - Manage Just in time secrets"
+	echo "    install-oss - Install Conjur OSS"
+	echo "    remove-oss  - Remove Conjur OSS & JIT"
+else
+   case $1 in
+		 install-oss)
+		    shout "Installing Conjur OSS"
+				mkdir demo; cd demo;
+		    curl -o docker-compose.yml https://www.conjur.org/get-started/docker-compose.quickstart.yml
+				docker-compose pull
+				docker-compose run --no-deps --rm conjur data-key generate > data_key
+				export CONJUR_DATA_KEY="$(< data_key)"
+				docker-compose up -d
+				sleep 4s
+				docker-compose exec conjur conjurctl account create demo | tee admin.out
+				cd -
+
+				shout "Logging in Conjur as admin"
+				sleep 1s
+				echo yes | conjur init -u https://localhost -a demo
+				api_key="$(grep API demo/admin.out | cut -d: -f2 | tr -d ' \r\n')"
+				sleep 1s
+				conjur authn login -u admin -p "$api_key"
+
+				shout "Loading default policies"
+				conjur policy load --replace root src/policy/root-1.yml
+				conjur policy load --replace jit-azure-internal src/policy/jit-azure-internal.yml | tee demo/jit-azure-internal.out
+				conjur policy load --replace jit-azure-secrets src/policy/jit-azure-secrets.yml
+				conjur policy load --replace root src/policy/root-2.yml
+
+				#conjur policy load --replace azure src/policy/azure.yml
+				#conjur policy load --replace azure/roles src/policy/azure-roles.yml
+				#conjur policy load --replace azure/creds src/policy/azure-creds.yml
+
+
+
+				shout "Prepare API keys for JIT"
+				jit_azure_web_api_key=$(cat demo/jit-azure-internal.out| jq -r '.created_roles."demo:host:jit-azure-internal/jit-azure-web".api_key')
+				jit_azure_mgr_api_key=$(cat demo/jit-azure-internal.out| jq -r '.created_roles."demo:host:jit-azure-internal/jit-azure-mgr".api_key')
+
+				shout "Download Summon"
+				wget -nc https://github.com/cyberark/summon/releases/download/v0.6.9/summon-linux-amd64.tar.gz
+				tar zvxf summon-linux-amd64.tar.gz
+				wget -nc https://github.com/cyberark/summon-conjur/releases/download/v0.5.2/summon-conjur-linux-amd64.tar.gz
+				tar zvxf summon-conjur-linux-amd64.tar.gz
+
+				cp summon src/docker
+				cp summon-conjur src/docker
+
+				shout "Building JIT web image"
+				cd src/docker
+				docker build -t quincycheng/conjur-jit-azure:latest .
+				cd "$_rootfolder"
+
+				shout "Starting JIT web container"
+				docker run -d --name "jit-azure-web" \
+										  --network="demo_default" \
+											-e TIME_ZONE="Asia/Hong_Kong" \
+											-e "CONJUR_MAJOR_VERSION=5" \
+											-e "CONJUR_ACCOUNT=demo" \
+											-e "CONJUR_APPLIANCE_URL=http://conjur" \
+											-e "CONJUR_AUTHN_LOGIN=host/jit-azure-internal/jit-azure-web" \
+											-e "CONJUR_AUTHN_API_KEY=$jit_azure_web_api_key" \
+											-e "CONJUR_SSL_CERTIFICATE=" \
+											-p 5000:5000 quincycheng/conjur-jit-azure:latest
+
+				shout "Installing Envoy as frontend proxy"
+				cd demo
+				shout "Generating certs"
+				mkdir certs; cd certs;
+				openssl req -nodes -new -x509 \
+				  -keyout cyberarkdemo-com.key -out cyberarkdemo-com.crt \
+				  -days 365 \
+				  -subj "/CN=$(hostname)/O=CyberArk Demo/C=HK";
+				cd ..
+
+				shout "Preparing envoy config files"
+				cp ../src/envoy/envoy.yaml.template envoy.yaml.1
+#				sed "s/THECONJURIP/$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' demo_conjur_1)/" envoy.yaml.1 > envoy.yaml.2
+#				sed "s/THEJITAZUREWEB/$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' jit-azure-web)/" envoy.yaml.2 > envoy.yaml.3
+				sed "s/THECONJURDOMAIN/$(hostname)/" envoy.yaml.1 > envoy.yaml
+
+				docker run -d --name conjur-proxy \
+											-p 80:8080 -p 443:8443 -p 8001:8001 \
+											--network "demo_default" \
+											-v $(pwd):/etc/envoy/ envoyproxy/envoy
+				cd ..
+
+				shout "Installation Completed"
+		 		;;
+		 remove-oss)
+		 		shout "Removing Conjur OSS"
+				docker kill conjur-proxy
+				docker rm conjur-proxy
+				docker kill jit-azure-web
+				docker rm jit-azure-web
+				docker-compose -f demo/docker-compose.yml down
+				docker-compose -f demo/docker-compose.yml kill
+
+				rm -rf certs demo
+				shout "Conjur OSS removed"
+				;;
+		 jit)
+		 		if [ "$#" -eq 1 ]; then
+					#display JIT Menu
+		    	echo "NAME"
+		    	echo "    jit - Manage Just in time secrets"
+		    	echo ""
+		    	echo "SYNOPSIS"
+		    	echo "    conjur jit enable azure"
+					echo "    conjur jit azure create_role <role id> <ttl in mins> <roles in json>"
+					echo "    conjur jit azure get_sp <role id>"
+					echo ""
+		    	echo "COMMANDS"
+		    	echo "    enable  - Enable Just in time"
+		    	echo "    azure   - Just in time operations for Azure"
+
+			  else
+ 				  if [ "$#" -eq 2 ]; then
+						echo "Unexpected Parameter"
+						conjur jit
+					else
+							case $2 in
+					 		 enable)
+							 	  shout "Enabling Just in time for Azure"
+
+									# User Check
+									shout "Checking logon user..."
+
+									if [[ $(conjur authn whoami |jq -r .username) != admin ]]; then
+										shout "Please login as admin"
+									else
+										shout "Logon user: admin"
+
+										shout "Please enter the following info:"
+										read -p "Azure Subscription ID: " subscription_id
+										conjur variable values add jit-azure-secrets/subscription_id $subscription_id
+
+										read -p "Azure Tenant ID: " tenant_id
+										conjur variable values add jit-azure-secrets/tenant_id $tenant_id
+
+										read -p "Azure Client ID: " client_id
+										conjur variable values add jit-azure-secrets/client_id $client_id
+
+										read -p "Azure Client Secret: " client_secret
+										conjur variable values add jit-azure-secrets/client_secret $client_secret
+
+										shout "Just in time for Azure has been configured"
+
+									fi
+									;;
+							 azure)
+							 	  case $3 in
+										create_role)
+											if [ "$#" -eq 6 ]; then
+												shout "Creating Azure role"
+
+												_conjur_url=$(grep url ~/.conjurrc)
+												_conjur_url=${_conjur_url##appliance_url:}
+
+												_policy=$(cat <<END
+- !policy
+  id: roles
+  body:
+  - !variable
+    id: $4
+  - !permit
+    role: !group /jit-azure-secrets/jit-admins
+    privileges: [ read, execute ]
+    resource: !variable $4
+END
+)
+												_role=$(cat <<END
+{
+	"ttl": "$5",
+	"role": "$6"
+}
+END
+)
+												shout "Adding variable"
+												curl -k -H "$(conjur authn authenticate -H)" \
+												${_conjur_url}/policies/demo/policy/azure \
+												     -X POST -d "${_policy}"
+												echo ""
+												shout "Adding value"
+												echo "${_role}" | conjur variable values add azure/roles/$4
+												shout "Azure Role Added"
+
+											else
+												shout "ERROR: Unexpected parameter"
+											fi
+											;;
+										get_sp)
+											if [ "$#" -eq 4 ]; then
+												shout "Getting Just in time Service Principal"
+
+												_conjur_url=$(grep url ~/.conjurrc)
+												_conjur_url=${_conjur_url##appliance_url:}
+
+												curl -s -k -X POST \
+												-H 'Content-Type: application/json' \
+												http://$(hostname):5000/azure/get_sp \
+												-d "{ \"role\": \"$4\" }" | tee sp.out
+												echo ""
+												cat sp.out | conjur variable values add azure/creds/$(cat sp.out|jq -r .appId)
+												rm sp.out
+
+												shout "Just in time Service Principal retrieved successfully"
+
+											else
+												shout "ERROR: Unexpected parameter"
+											fi
+											;;
+										*)
+										  shout "ERROR: Unexpected parameter"
+											conjur jit
+											;;
+										esac
+										;;
+							 *)
+							 		shout "ERROR: Unexpected parameter"
+									conjur jit
+									;;
+								esac
+						fi
+					fi
+
+				;;
+		 *)
+		   # Pass to Conjur CLI for other args
+       $_realcli $*
+			 ;;
+		esac
+fi

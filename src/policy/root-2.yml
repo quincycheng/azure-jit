@@ -1,0 +1,13 @@
+- !policy
+  id: jit-azure-secrets
+
+- !policy
+  id: jit-azure-internal
+
+- !policy
+  id: azure
+
+- !permit
+  resource: !policy azure
+  role: !group /jit-azure-secrets/jit-admins
+  privileges: [ read, create ]

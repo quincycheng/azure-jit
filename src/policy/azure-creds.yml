@@ -1,0 +1,4 @@
+- !permit
+  resource: *variables
+  privileges: [ read, execute ]
+  roles: !group jit-admins
