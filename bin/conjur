@@ -1,6 +1,6 @@
 #!/bin/bash
 
-_realcli="/usr/local/lib/ruby/gems/2.6.0/gems/conjur-cli-6.2.0/bin/conjur"
+_realcli="$(command -v conjur)"
 _rootfolder="$(pwd)"
 
 function shout {
